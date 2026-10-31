@@ -5,23 +5,39 @@ import SwiftUI
 enum Diagnostics {
     struct Failure: Error, CustomStringConvertible { var description: String }
 
-    static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-        if !condition() { throw Failure(description: message) }
+    static func argument(_ name: String) -> String? {
+        guard let i = CommandLine.arguments.firstIndex(of: name), CommandLine.arguments.count > i + 1 else { return nil }
+        return CommandLine.arguments[i + 1]
+    }
+
+    static func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+        if try !condition() { throw Failure(description: message) }
     }
 
     @MainActor
     static func snapshot(to url: URL) throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
-        guard let sampleURL = Bundle.main.url(forResource: "sample", withExtension: "png") else {
+        guard let sampleURL = argument("--snapshot-input").map({ URL(fileURLWithPath: $0) }) ?? Bundle.main.url(forResource: "sample", withExtension: "png") else {
             throw Failure(description: "Sample is missing from app bundle")
         }
         let raster = try Raster.load(sampleURL)
-        let model = AppModel()
+        let model = AppModel(loadSample: false)
         model.raster = raster
         let engine = Engine(raster: raster, parameters: model.parameters)
         for style in Style.allCases { model.drawings[style] = engine.drawing(style, model.parameters) }
         model.busy = false
+        if let i = CommandLine.arguments.firstIndex(of: "--snapshot-style"), CommandLine.arguments.count > i + 1,
+           let number = Int(CommandLine.arguments[i + 1]), let style = Style(rawValue: number) {
+            model.selectEffect(style); model.category = style.category
+        }
+        if CommandLine.arguments.contains("--snapshot-composition") {
+            model.selectEffect(.ascii)
+            model.shadowPreset()
+            model.regenerateComposition()
+            let deadline = Date(timeIntervalSinceNow: 8)
+            while model.layersBusy && Date() < deadline { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }
+        }
         let view = ContentView().environmentObject(model).frame(width: 1180, height: 860).environment(\.colorScheme, .light)
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 1180, height: 860)
@@ -53,9 +69,9 @@ enum Diagnostics {
         return try Raster.prepare(image, name: "fixture")
     }
 
+    @MainActor
     static func run() throws {
-        let outputIndex = CommandLine.arguments.firstIndex(of: "--output")
-        let destination = outputIndex.map { URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) }
+        let destination = argument("--output").map { URL(fileURLWithPath: $0) }
         if let destination { try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true) }
         let p = Parameters()
         let raster = try fixture(transparent: false)
@@ -73,7 +89,7 @@ enum Diagnostics {
         let color = NSColor(srgbRed: 0.52, green: 0.56, blue: 0.87, alpha: 1)
         for style in Style.allCases {
             let d = engine.drawing(style, p)
-            try require(!d.marks.isEmpty, "Style \(style.rawValue) returned no vector paths")
+            try require(!d.isEmpty, "Style \(style.rawValue) returned no output")
             let svg = d.svg(color: color, background: nil)
             try require(!svg.contains("nan") && !svg.contains("inf"), "Non-finite SVG coordinates")
             let parser = XMLParser(data: Data(svg.utf8))
@@ -98,35 +114,41 @@ enum Diagnostics {
         try require(direction.colorAt(x: 50, y: 30)!.redComponent < 0.1, "PNG vertical orientation is inverted")
         try require(direction.colorAt(x: 50, y: 350)!.redComponent > 0.9, "PNG bottom must remain white")
         try halftoneChecks(destination: destination)
+        try compositionChecks(destination: destination)
         print("PASS: segmentation, alpha holes, contour topology, \(Style.allCases.count) styles, SVG XML, PNG size/transparency, orientation, deterministic output")
 
-        if let destination, let sampleURL = Bundle.main.url(forResource: "sample", withExtension: "png") {
+        if let destination, let sampleURL = argument("--render-input").map({ URL(fileURLWithPath: $0) }) ?? Bundle.main.url(forResource: "sample", withExtension: "png") {
             let sample = try Raster.load(sampleURL)
             let sampleEngine = Engine(raster: sample, parameters: p)
             for style in Style.allCases {
                 let d = sampleEngine.drawing(style, p)
-                try require(!d.marks.isEmpty, "Sample style \(style.rawValue) is empty")
-                try d.png(color: color, background: .white, pixels: 768)!.write(to: destination.appendingPathComponent("penguin-\(style.rawValue).png"))
-                try Data(d.svg(color: color, background: nil).utf8).write(to: destination.appendingPathComponent("penguin-\(style.rawValue).svg"))
+                try require(!d.isEmpty, "Sample style \(style.rawValue) is empty")
+                let prefix = argument("--render-input") == nil ? "penguin" : "reference"
+                let ink = style.isNew ? style.previewInk : color
+                let paper = style.isNew ? style.previewPaper : .white
+                try d.png(color: ink, background: paper, pixels: 768)!.write(to: destination.appendingPathComponent("\(prefix)-\(style.rawValue).png"))
+                try Data(d.svg(color: ink, background: nil).utf8).write(to: destination.appendingPathComponent("\(prefix)-\(style.rawValue).svg"))
             }
             try contactSheet(sampleEngine, parameters: p, color: color).write(to: destination.appendingPathComponent("contact-sheet.png"))
-            print("PASS: bundled penguin in all \(Style.allCases.count) styles; contact sheet saved")
+            try contactSheet(sampleEngine, parameters: p, color: .black, styles: Style.allCases.filter(\.isNew)).write(to: destination.appendingPathComponent("new-effects.png"))
+            print("PASS: sample image in all \(Style.allCases.count) styles; contact sheets saved")
         }
     }
 
-    static func contactSheet(_ engine: Engine, parameters: Parameters, color: NSColor) throws -> Data {
-        let cols = 4, cell = 300, rows = Int(ceil(Double(Style.allCases.count) / 4))
+    static func contactSheet(_ engine: Engine, parameters: Parameters, color: NSColor, styles: [Style] = Style.allCases) throws -> Data {
+        let cols = 4, cell = 300, rows = Int(ceil(Double(styles.count) / 4))
         let ctx = CGContext(data: nil, width: cols * cell, height: rows * cell, bitsPerComponent: 8,
                             bytesPerRow: cols * cell * 4, space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         ctx.setFillColor(NSColor.white.cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: cols * cell, height: rows * cell))
         ctx.translateBy(x: 0, y: CGFloat(rows * cell)); ctx.scaleBy(x: 1, y: -1)
-        for (index, style) in Style.allCases.enumerated() {
+        for (index, style) in styles.enumerated() {
             ctx.saveGState()
             ctx.translateBy(x: CGFloat((index % cols) * cell), y: CGFloat((index / cols) * cell))
             ctx.scaleBy(x: CGFloat(cell) / 384, y: CGFloat(cell) / 384)
-            engine.drawing(style, parameters).paint(in: ctx, color: color)
+            if style.isNew { ctx.setFillColor(style.previewPaper.cgColor); ctx.fill(CGRect(x: 0, y: 0, width: 384, height: 384)) }
+            engine.drawing(style, parameters).paint(in: ctx, color: style.isNew ? style.previewInk : color)
             ctx.restoreGState()
         }
         return NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!

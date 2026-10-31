@@ -27,9 +27,11 @@ struct FormaApp: App {
                 Button("Загрузить пример") { model.loadSample() }
             }
             CommandGroup(after: .saveItem) {
+                Button("Сохранить проект…") { model.saveProject() }.keyboardShortcut("s")
+                Button("Открыть проект…") { model.openProject() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Экспортировать SVG…") { model.export(svg: true) }.keyboardShortcut("s", modifiers: [.command, .shift])
-                    .disabled(model.busy)
-                Button("Экспортировать PNG…") { model.export(svg: false) }.disabled(model.busy)
+                    .disabled(!model.canExport)
+                Button("Экспортировать PNG…") { model.export(svg: false) }.disabled(!model.canExport)
             }
         }
     }

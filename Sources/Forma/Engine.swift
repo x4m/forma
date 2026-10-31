@@ -1,11 +1,13 @@
 import AppKit
 import ImageIO
 
-enum Style: Int, CaseIterable, Identifiable {
+enum Style: Int, CaseIterable, Identifiable, Codable {
     case outline = 2, dots = 3, ovals = 11, pixels = 12, waves = 13
     case polygon = 21, mosaic = 22, angular = 23, pencil = 31, bars = 32
     case silhouette = 33, rings = 41, geometry = 42, sketch = 43
     case candles = 51, diagonal = 52, bricks = 53, threads = 54
+    case ascii = 61, crosses = 62, dotScreen = 63, stipple = 64, flow = 65, glitch = 66
+    case xray = 71, photogram = 72, shadow = 73, photo = 74, softFocus = 75
     var id: Int { rawValue }
     var title: String {
         switch self {
@@ -27,6 +29,17 @@ enum Style: Int, CaseIterable, Identifiable {
         case .diagonal: return "Наклонный растр"
         case .bricks: return "Кирпичики"
         case .threads: return "Нити"
+        case .ascii: return "Алфавит"
+        case .crosses: return "Крестики"
+        case .dotScreen: return "Полутоновые точки"
+        case .stipple: return "Зерно"
+        case .flow: return "Стежки"
+        case .glitch: return "Сканлайн"
+        case .xray: return "X-ray"
+        case .photogram: return "Фотограмма"
+        case .shadow: return "Мягкая тень"
+        case .photo: return "Фотография"
+        case .softFocus: return "Размытие фото"
         }
     }
     var explanation: String {
@@ -49,15 +62,46 @@ enum Style: Int, CaseIterable, Identifiable {
         case .diagonal: return "Наклонная сетка штрихов: чем темнее фотография, тем крупнее штрих."
         case .bricks: return "Смещённые ряды горизонтальных штрихов передают полутона."
         case .threads: return "Непрерывные нити утолщаются в тёмных местах фотографии."
+        case .ascii: return "Произвольные буквы, цифры и знаки передают яркость фотографии."
+        case .crosses: return "Крестики на ровной сетке: тёмные участки вышиваются плотнее."
+        case .dotScreen: return "Размер точек меняется плавно, сохраняя серые полутона."
+        case .stipple: return "Нерегулярное зерно с плотностью по яркости фотографии."
+        case .flow: return "Короткие стежки огибают перепады яркости и границы формы."
+        case .glitch: return "Горизонтальные строки с рваными краями и повторяемым сдвигом."
+        case .xray: return "Художественный рентген: светящиеся края и полупрозрачные тона. Скрытая структура не восстанавливается."
+        case .photogram: return "Мягкие светлые отпечатки на цветной бумаге."
+        case .shadow: return "Размытое тоновое пятно на прозрачном фоне — основа для тени."
+        case .photo: return "Исходная фотография в цвете; можно положить под другие слои."
+        case .softFocus: return "Фотография с мягким гауссовым размытием."
         }
     }
     var usesInk: Bool { [.dots, .pencil, .bars, .silhouette].contains(self) }
-    var isHalftone: Bool { rawValue >= 51 }
+    var isHalftone: Bool { rawValue >= 51 && rawValue < 70 }
+    var isPhotographic: Bool { rawValue >= 71 }
+    var usesTones: Bool { isHalftone || isPhotographic }
+    var supportsTint: Bool { self != .photo && self != .softFocus }
+    var isNew: Bool { rawValue >= 61 }
+    var category: StyleGroup {
+        switch self {
+        case .ascii, .crosses: return .symbols
+        case .pencil, .stipple, .flow, .glitch: return .texture
+        case .xray, .photogram, .shadow, .photo, .softFocus: return .photographic
+        case .dots, .waves, .bars, .rings, .candles, .diagonal, .bricks, .threads, .dotScreen: return .screen
+        default: return .form
+        }
+    }
+    var previewInk: NSColor { self == .xray ? NSColor(srgbRed: 0.72, green: 0.86, blue: 1, alpha: 1) : (self == .photogram ? .white : .black) }
+    var previewPaper: NSColor { self == .xray ? .black : (self == .photogram ? NSColor(srgbRed: 0.16, green: 0.34, blue: 0.5, alpha: 1) : .white) }
     static var halftones: [Style] { [.candles, .diagonal, .bricks, .threads] }
-    static var gallery: [Style] { halftones + allCases.filter { !$0.isHalftone } }
+    static var gallery: [Style] { allCases.filter(\.isNew) + halftones + allCases.filter { !$0.isNew && !halftones.contains($0) } }
 }
 
-struct Parameters: Equatable {
+enum StyleGroup: String, CaseIterable, Identifiable {
+    case all = "Все эффекты", form = "Контуры и формы", screen = "Растры", symbols = "Символы", texture = "Текстуры", photographic = "Фото и свет"
+    var id: String { rawValue }
+}
+
+struct Parameters: Equatable, Codable {
     var spacing: Double = 12
     var stroke: Double = 2.4
     var simplification: Double = 3
@@ -68,6 +112,11 @@ struct Parameters: Equatable {
     var toneContrast: Double = 1.2
     var toneDensity: Double = 1
     var screenAngle: Double = 0
+    var alphabet = ".,:;irsXA253hMHGS#9B&@"
+    var sortAlphabet = true
+    var invertTones = false
+    var softness: Double = 3
+    var textureAmount: Double = 0.5
 }
 
 enum ImageFailure: LocalizedError {
@@ -213,8 +262,10 @@ struct Engine {
     let inkLoops: [[CGPoint]]
     let n = Raster.n
     let toneField: ToneField
+    let raster: Raster
 
     init(raster: Raster, parameters: Parameters) {
+        self.raster = raster
         let masks = raster.masks(parameters)
         shape = masks.shape; ink = masks.ink
         shapeLoops = contours(shape); inkLoops = contours(ink)
@@ -222,6 +273,8 @@ struct Engine {
     }
 
     func drawing(_ style: Style, _ p: Parameters) -> Drawing {
+        if style.isPhotographic { return photographicDrawing(style, p) }
+        if style.rawValue >= 61 { return toneField.textureDrawing(style, p) }
         if style.isHalftone { return toneField.drawing(style, p) }
         var drawing = Drawing()
         let dark = p.maskMode == 2 || (p.maskMode == 0 && style.usesInk)
@@ -407,7 +460,8 @@ struct Engine {
                     drawing.line(jittered, width: max(0.35, stroke * 0.22), closed: true, smooth: true, opacity: 0.55)
                 }
             }
-        case .candles, .diagonal, .bricks, .threads:
+        case .candles, .diagonal, .bricks, .threads, .ascii, .crosses, .dotScreen, .stipple, .flow, .glitch,
+             .xray, .photogram, .shadow, .photo, .softFocus:
             break // The continuous-tone renderer above handles these styles.
         }
         return drawing
@@ -433,7 +487,7 @@ struct ToneField {
             if p.maskMode == 2 && !ink[i] { continue }
             let luma = (0.2126 * Double(raster.rgba[i * 4]) + 0.7152 * Double(raster.rgba[i * 4 + 1]) + 0.0722 * Double(raster.rgba[i * 4 + 2])) / (255 * alpha)
             let adjusted = min(1, max(0, (luma - 0.5) * p.toneContrast + 0.5))
-            let tone = pow(1 - adjusted, 1 / p.toneDensity)
+            let tone = pow(p.invertTones ? adjusted : 1 - adjusted, 1 / p.toneDensity)
             d[i] = tone * alpha
             a[i] = alpha
         }

@@ -14,16 +14,22 @@ struct ContentView: View {
             header
             Divider()
             HStack(spacing: 0) {
-                controls.frame(width: 242)
+                Group {
+                    if model.mode == .effects { controls }
+                    else { LayerListView() }
+                }.frame(width: 242)
                 Divider()
                 workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
-                styles.frame(width: 258)
+                Group {
+                    if model.mode == .effects { styles }
+                    else { LayerInspectorView() }
+                }.frame(width: 258)
             }
             Divider()
             HStack(spacing: 8) {
-                Circle().fill(model.busy ? Color.orange : accent).frame(width: 5, height: 5)
-                Text(model.busy ? "Пересчитываю стили…" : model.status)
+                Circle().fill(model.renderBusy ? Color.orange : accent).frame(width: 5, height: 5)
+                Text(model.renderBusy ? "Пересчитываю изображение…" : (model.mode == .composition ? "\(model.layerCountLabel) · \(model.projectName)" : model.status))
                 Spacer()
                 Text("SWIFTUI / MACOS").tracking(1.6).font(.system(size: 9, design: .monospaced))
             }
@@ -33,6 +39,10 @@ struct ContentView: View {
         .tint(accent)
         .frame(minWidth: 1020, minHeight: 720)
         .onChange(of: model.parameters) { _, _ in model.regenerate() }
+        .onChange(of: model.layers) { _, _ in model.regenerateComposition() }
+        .onChange(of: model.paper) { _, _ in model.regenerateComposition() }
+        .onChange(of: model.paperColor) { _, _ in model.regenerateComposition() }
+        .onChange(of: model.mode) { _, value in if value == .composition { model.regenerateComposition() } }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dropTarget) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -63,17 +73,27 @@ struct ContentView: View {
                 Image(systemName: "scribble.variable").font(.system(size: 22, weight: .medium)).foregroundStyle(accent)
             }
             Text("forma").font(.system(size: 27, weight: .semibold, design: .rounded)).tracking(-1.3)
-            Text("РАСТР → ФОРМА").font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(1.7).foregroundStyle(.secondary).padding(.leading, 10)
+            Picker("Режим", selection: $model.mode) {
+                ForEach(WorkspaceMode.allCases) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 200).padding(.leading, 18)
             Spacer()
             Button { model.loadSample() } label: { Label("Пример", systemImage: "sparkles") }
                 .buttonStyle(.borderless).padding(.trailing, 8).help("Загрузить пингвина из референса")
             Menu {
-                Button("SVG · вектор") { model.export(svg: true) }
+                Button("Открыть проект…") { model.openProject() }
+                Button("Сохранить проект…") { model.saveProject() }
+            } label: { Label("Проект", systemImage: "doc") }.menuStyle(.borderlessButton).fixedSize()
+            if model.mode == .effects {
+                Button { model.addLayer() } label: { Label("В слой", systemImage: "square.stack.3d.up") }
+                    .disabled(model.busy).padding(.horizontal, 6)
+            }
+            Menu {
+                Button("SVG") { model.export(svg: true) }
                 Button("PNG · 1536 × 1536") { model.export(svg: false) }
             } label: { Label("Экспорт", systemImage: "square.and.arrow.up") }
                 .menuStyle(.borderlessButton).fixedSize().padding(.horizontal, 16).padding(.vertical, 9)
                 .background(accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
-                .disabled(model.busy || model.current.marks.isEmpty)
+                .disabled(!model.canExport)
         }
         .padding(.horizontal, 22).frame(height: 72)
     }
@@ -100,40 +120,10 @@ struct ContentView: View {
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineSpacing(3)
                 }
                 Divider()
-                VStack(alignment: .leading, spacing: 15) {
-                    caption("02", model.selected.isHalftone ? "ИСТОЧНИК ПОЛУТОНОВ" : "ВЫДЕЛЕНИЕ ОБЪЕКТА")
-                    Picker("Область", selection: $model.parameters.maskMode) {
-                        Text(model.selected.isHalftone ? "Вся фотография" : "По стилю").tag(0)
-                        Text("Силуэт").tag(1)
-                        Text("Тёмные области").tag(2)
-                    }.labelsHidden().frame(maxWidth: .infinity)
-                    if !model.selected.isHalftone || model.parameters.maskMode != 0 {
-                        setting("Допуск фона", value: $model.parameters.backgroundTolerance, range: 5...180, format: "%.0f")
-                        setting("Порог тёмного", value: $model.parameters.inkThreshold, range: 35...250, format: "%.0f")
-                    }
-                    Text(model.selected.isHalftone ? "Светлые места дают тонкие штрихи, тёмные — широкие. Удаление фона не требуется." : "Если исчезают детали — уменьши допуск. Для сложного фона сначала удали его в редакторе.")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineSpacing(3)
-                }
+                EffectSettings(style: model.selected, parameters: $model.parameters, ink: $model.color)
                 Divider()
-                VStack(alignment: .leading, spacing: 15) {
-                    caption("03", "ХАРАКТЕР")
-                    setting("Шаг элементов", value: $model.parameters.spacing, range: 4...30, format: "%.0f")
-                    setting("Толщина линии", value: $model.parameters.stroke, range: 0.6...7, format: "%.1f")
-                    if model.selected.isHalftone {
-                        setting("Контраст", value: $model.parameters.toneContrast, range: 0.4...3, format: "%.1f")
-                        setting("Плотность", value: $model.parameters.toneDensity, range: 0.4...2.5, format: "%.1f")
-                        setting("Поворот растра", value: $model.parameters.screenAngle, range: -90...90, format: "%.0f°")
-                    } else {
-                        setting("Упрощение", value: $model.parameters.simplification, range: 0.7...9, format: "%.1f")
-                        Toggle("Внутренние линии контура", isOn: $model.parameters.detail).font(.system(size: 11))
-                    }
-                    palette("Чернила", selection: $model.color, colors: [.black, accent])
-                    Toggle("Фон при экспорте", isOn: $model.paper).font(.system(size: 11))
-                    if model.paper {
-                        palette("Бумага", selection: $model.paperColor, colors: [.white, Color(red: 1, green: 0.98, blue: 0.88), Color(red: 1, green: 0.84, blue: 0.3)])
-                    }
-                    Button("Сбросить настройки") { model.reset() }.buttonStyle(.link).font(.system(size: 11))
-                }
+                PaperSettings(paper: $model.paper, color: $model.paperColor)
+                Button("Сбросить настройки") { model.reset() }.buttonStyle(.link).font(.system(size: 11))
             }.padding(20)
         }
     }
@@ -142,8 +132,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(model.showOriginal ? "Исходное изображение" : model.selected.title).font(.system(size: 21, weight: .medium))
-                    Text(model.showOriginal ? "Оригинал · до преобразования" : (model.selected.isHalftone ? "Полутоновый растр · яркость → штрих" : "Интерпретация \(model.selected.rawValue) из референса"))
+                    Text(model.showOriginal ? "Исходное изображение" : (model.mode == .composition ? "Композиция" : model.selected.title)).font(.system(size: 21, weight: .medium))
+                    Text(model.showOriginal ? "Оригинал · до преобразования" : (model.mode == .composition ? "Слои одного исходного изображения" : model.selected.category.rawValue))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -159,6 +149,18 @@ struct ContentView: View {
                     if model.showOriginal, let raster = model.raster {
                         Color.white
                         Image(decorative: raster.image, scale: 1).resizable().scaledToFit()
+                    } else if model.mode == .composition {
+                        VectorCanvas(drawing: Drawing(), color: .black, paper: model.paper, paperColor: model.paperColor)
+                        if let image = model.compositionPreview {
+                            Image(decorative: image, scale: 1).resizable().scaledToFit()
+                        } else {
+                            VStack(spacing: 14) {
+                                Image(systemName: "square.3.layers.3d").font(.system(size: 32)).foregroundStyle(accent)
+                                Text("Собери эффект из слоёв").font(.headline)
+                                Button("Добавить текущий эффект") { model.addLayer() }
+                                Button("Тень + эффект") { model.shadowPreset() }
+                            }.foregroundStyle(.secondary)
+                        }
                     } else {
                         VectorCanvas(drawing: model.current, color: model.color, paper: model.paper, paperColor: model.paperColor)
                     }
@@ -166,17 +168,17 @@ struct ContentView: View {
                 .frame(width: side, height: side)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
                 .overlay(alignment: .bottomTrailing) {
-                    Text(model.showOriginal ? "01" : String(format: "%02d", model.selected.rawValue))
+                    Text(model.showOriginal ? "01" : (model.mode == .composition ? "СЛОИ" : String(format: "%02d", model.selected.rawValue)))
                         .font(.system(size: 12, design: .monospaced)).foregroundStyle(accent.opacity(0.65)).padding(16)
                 }
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
             }
             VStack(spacing: 10) {
-                Text(model.selected.explanation).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(model.mode == .composition ? "Настрой выбранный слой справа. Проект .forma сохраняет картинку и все настройки." : (model.current.note ?? model.selected.explanation)).font(.system(size: 11)).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center).frame(maxWidth: 380)
                 HStack(spacing: 7) {
                     Image(systemName: "point.topleft.down.curvedto.point.bottomright.up").font(.system(size: 10))
-                    Text("SVG — масштабируется без потерь").font(.system(size: 10, design: .monospaced))
+                    Text((model.mode == .composition ? model.composition.hasRaster : model.current.raster != nil) ? "SVG содержит встроенное изображение" : "SVG — векторные контуры").font(.system(size: 10, design: .monospaced))
                 }.foregroundStyle(.tertiary)
             }.frame(height: 100).padding(.horizontal, 20)
         }
@@ -187,17 +189,19 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 caption("04", "ВЫБЕРИ СТИЛЬ")
-                Text("\(Style.allCases.count) стилей · новые полутона сверху").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("\(Style.allCases.count) эффектов · 5 групп").font(.system(size: 11)).foregroundStyle(.secondary)
+                Picker("Группа эффектов", selection: $model.category) {
+                    ForEach(StyleGroup.allCases) { Text($0.rawValue).tag($0) }
+                }.labelsHidden()
             }.padding(.horizontal, 18).padding(.top, 22)
             ScrollView {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    ForEach(Style.gallery) { style in
+                    ForEach(Style.gallery.filter { model.category == .all || $0.category == model.category }) { style in
                         Button {
-                            model.selected = style
-                            model.showOriginal = false
+                            model.selectEffect(style)
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                VectorCanvas(drawing: model.drawings[style] ?? Drawing(), color: model.color, paper: true, paperColor: model.paperColor)
+                                VectorCanvas(drawing: model.drawings[style] ?? Drawing(), color: Color(nsColor: style.previewInk), paper: true, paperColor: Color(nsColor: style.previewPaper))
                                     .frame(height: 91).clipShape(RoundedRectangle(cornerRadius: 6))
                                     .overlay(alignment: .topLeading) {
                                         Text(String(format: "%02d", style.rawValue)).font(.system(size: 9, design: .monospaced))
@@ -224,30 +228,7 @@ struct ContentView: View {
         }.font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(1.2)
     }
 
-    private func palette(_ title: String, selection: Binding<Color>, colors: [Color]) -> some View {
-        HStack(spacing: 7) {
-            Text(title).font(.system(size: 11))
-            Spacer()
-            ForEach(colors.indices, id: \.self) { i in
-                Button { selection.wrappedValue = colors[i] } label: {
-                    Circle().fill(colors[i]).frame(width: 16, height: 16)
-                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                }.buttonStyle(.plain).accessibilityLabel("\(title), образец \(i + 1)")
-            }
-            ColorPicker(title, selection: selection, supportsOpacity: false).labelsHidden()
-        }
-    }
 
-    private func setting(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, format: String) -> some View {
-        VStack(spacing: 7) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(String(format: format, value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary)
-            }.font(.system(size: 11))
-            Slider(value: value, in: range).controlSize(.small).accessibilityLabel(title)
-        }
-    }
 }
 
 // SwiftUI Canvas is a native immediate-mode 2D drawing surface.
@@ -274,6 +255,16 @@ struct VectorCanvas: View {
             let scale = min(size.width, size.height) / drawing.size
             context.translateBy(x: (size.width - drawing.size * scale) / 2, y: (size.height - drawing.size * scale) / 2)
             context.scaleBy(x: scale, y: scale)
+            if let image = drawing.raster {
+                context.drawLayer { layer in
+                    let rect = CGRect(x: 0, y: 0, width: drawing.size, height: drawing.size)
+                    layer.draw(Image(decorative: image, scale: 1), in: rect)
+                    if drawing.rasterUsesInk {
+                        layer.blendMode = .sourceIn
+                        layer.fill(Path(rect), with: .color(color))
+                    }
+                }
+            }
             for mark in drawing.marks {
                 context.opacity = mark.opacity
                 let path = Path(mark.path)

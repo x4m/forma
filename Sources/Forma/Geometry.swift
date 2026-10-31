@@ -12,6 +12,10 @@ struct Mark {
 struct Drawing {
     var marks: [Mark] = []
     var size: CGFloat = 384
+    var raster: CGImage?
+    var rasterUsesInk = false
+    var note: String?
+    var isEmpty: Bool { marks.isEmpty && raster == nil }
 
     mutating func line(_ points: [CGPoint], width: CGFloat, closed: Bool = false,
                        filled: Bool = false, smooth: Bool = false, opacity: CGFloat = 1) {
@@ -51,6 +55,18 @@ struct Drawing {
     }
 
     func paint(in ctx: CGContext, color: NSColor) {
+        if let raster {
+            ctx.saveGState()
+            if rasterUsesInk { ctx.beginTransparencyLayer(auxiliaryInfo: nil) }
+            drawImage(raster, in: CGRect(x: 0, y: 0, width: size, height: size), context: ctx)
+            if rasterUsesInk {
+                ctx.setBlendMode(.sourceIn)
+                ctx.setFillColor(color.cgColor)
+                ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+                ctx.endTransparencyLayer()
+            }
+            ctx.restoreGState()
+        }
         ctx.setFillColor(color.cgColor)
         ctx.setStrokeColor(color.cgColor)
         ctx.setLineJoin(.round)
@@ -85,6 +101,19 @@ struct Drawing {
         if let background {
             elements.append("<rect width=\"384\" height=\"384\" fill=\"\(background.hex)\"/>")
         }
+        elements.append(contentsOf: svgElements(color: color))
+        return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1536\" height=\"1536\" viewBox=\"0 0 384 384\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n" + elements.joined(separator: "\n") + "\n</svg>"
+    }
+
+    func svgElements(color: NSColor) -> [String] {
+        var elements: [String] = []
+        if raster != nil {
+            var imageOnly = self
+            imageOnly.marks = []
+            if let data = imageOnly.png(color: color, background: nil, pixels: 384) {
+                elements.append("<image width=\"384\" height=\"384\" href=\"data:image/png;base64,\(data.base64EncodedString())\"/>")
+            }
+        }
         for mark in marks {
             var commands: [String] = []
             mark.path.applyWithBlock { pointer in
@@ -102,8 +131,17 @@ struct Drawing {
             let appearance = mark.fill ? "fill=\"\(color.hex)\" fill-rule=\"evenodd\"" : "fill=\"none\" stroke=\"\(color.hex)\" stroke-width=\"\(fmt(mark.width))\""
             elements.append("<path d=\"\(commands.joined(separator: " "))\" \(appearance) opacity=\"\(fmt(mark.opacity))\"/>")
         }
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1536\" height=\"1536\" viewBox=\"0 0 384 384\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n" + elements.joined(separator: "\n") + "\n</svg>"
+        return elements
     }
+}
+
+// Draw a CGImage into our top-left coordinate system without flipping its rows.
+func drawImage(_ image: CGImage, in rect: CGRect, context: CGContext) {
+    context.saveGState()
+    context.translateBy(x: rect.minX, y: rect.maxY)
+    context.scaleBy(x: 1, y: -1)
+    context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+    context.restoreGState()
 }
 
 func fmt(_ v: CGFloat) -> String { String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), Double(v)) }
@@ -111,7 +149,8 @@ func fmt(_ v: CGFloat) -> String { String(format: "%.3f", locale: Locale(identif
 extension NSColor {
     var hex: String {
         let c = usingColorSpace(.deviceRGB) ?? self
-        return String(format: "#%02x%02x%02x", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
+        func channel(_ value: CGFloat) -> Int { min(255, max(0, Int(value * 255))) }
+        return String(format: "#%02x%02x%02x", channel(c.redComponent), channel(c.greenComponent), channel(c.blueComponent))
     }
 }
 
