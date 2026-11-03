@@ -13,7 +13,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            HStack(spacing: 0) {
+            if model.mode == .tiling { TilingWorkspaceView() }
+            else { HStack(spacing: 0) {
                 Group {
                     if model.mode == .effects { controls }
                     else { LayerListView() }
@@ -25,11 +26,11 @@ struct ContentView: View {
                     if model.mode == .effects { styles }
                     else { LayerInspectorView() }
                 }.frame(width: 258)
-            }
+            } }
             Divider()
             HStack(spacing: 8) {
                 Circle().fill(model.renderBusy ? Color.orange : accent).frame(width: 5, height: 5)
-                Text(model.renderBusy ? "Пересчитываю изображение…" : (model.mode == .composition ? "\(model.layerCountLabel) · \(model.projectName)" : model.status))
+                Text(model.mode == .tiling ? "\(model.tile.polygon.count) вершин контура · одинаковые плитки без щелей" : (model.renderBusy ? "Пересчитываю изображение…" : (model.mode == .composition ? "\(model.layerCountLabel) · \(model.projectName)" : model.status)))
                 Spacer()
                 Text("SWIFTUI / MACOS").tracking(1.6).font(.system(size: 9, design: .monospaced))
             }
@@ -72,10 +73,11 @@ struct ContentView: View {
             Text("forma").font(.system(size: 27, weight: .semibold, design: .rounded)).tracking(-1.3)
             Picker("Режим", selection: $model.mode) {
                 ForEach(WorkspaceMode.allCases) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented).labelsHidden().frame(width: 200).padding(.leading, 18)
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 300).padding(.leading, 18)
             Spacer()
-            Button { model.loadSample() } label: { Label("Пример", systemImage: "sparkles") }
+            if model.mode != .tiling { Button { model.loadSample() } label: { Label("Пример", systemImage: "sparkles") }
                 .buttonStyle(.borderless).padding(.trailing, 8).help("Загрузить пингвина из референса")
+            }
             Menu {
                 Button("Открыть проект…") { model.openProject() }
                 Button("Сохранить проект…") { model.saveProject() }
@@ -86,7 +88,7 @@ struct ContentView: View {
             }
             Menu {
                 Button("SVG") { model.export(svg: true) }
-                Button("PNG · 1536 × 1536") { model.export(svg: false) }
+                Button(model.mode == .tiling ? "PNG · 1536 × 1152" : "PNG · 1536 × 1536") { model.export(svg: false) }
             } label: { Label("Экспорт", systemImage: "square.and.arrow.up") }
                 .menuStyle(.borderlessButton).fixedSize().padding(.horizontal, 16).padding(.vertical, 9)
                 .background(accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))

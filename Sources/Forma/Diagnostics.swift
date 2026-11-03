@@ -39,6 +39,7 @@ enum Diagnostics {
             let deadline = Date(timeIntervalSinceNow: 8)
             while model.layersBusy && Date() < deadline { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }
         }
+        if CommandLine.arguments.contains("--snapshot-tiling") { model.mode = .tiling; model.tilePreset(1) }
         let view = ContentView().environmentObject(model).frame(width: 1180, height: 860).environment(\.colorScheme, .light)
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 1180, height: 860)
@@ -117,6 +118,7 @@ enum Diagnostics {
         try halftoneChecks(destination: destination)
         try compositionChecks(destination: destination)
         try historyChecks()
+        try tilingChecks(destination: destination)
         print("PASS: segmentation, alpha holes, contour topology, \(Style.allCases.count) styles, SVG XML, PNG size/transparency, orientation, deterministic output")
 
         if let destination, let sampleURL = argument("--render-input").map({ URL(fileURLWithPath: $0) }) ?? Bundle.main.url(forResource: "sample", withExtension: "png") {

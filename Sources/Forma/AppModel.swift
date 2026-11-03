@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum WorkspaceMode: String, CaseIterable, Identifiable {
-    case effects = "Эффекты", composition = "Композиция"
+    case effects = "Эффекты", composition = "Композиция", tiling = "Мощение"
     var id: String { rawValue }
 }
 
@@ -27,6 +27,7 @@ final class AppModel: ObservableObject {
     @Published var compositionPreview: CGImage?
     @Published var layersBusy = false
     @Published var projectName = "Новая композиция"
+    @Published var tile = TileDesign()
     private var revision = 0
     private var compositionRevision = 0
     private var pendingComposition: DispatchWorkItem?
@@ -38,8 +39,8 @@ final class AppModel: ObservableObject {
     var continuousEdit: (state: EditorState, name: String)?
 
     var current: Drawing { drawings[selected] ?? Drawing() }
-    var renderBusy: Bool { busy || (mode == .composition && layersBusy) }
-    var canExport: Bool { !renderBusy && (mode == .effects ? !current.isEmpty : layers.contains { $0.enabled }) }
+    var renderBusy: Bool { mode != .tiling && (busy || (mode == .composition && layersBusy)) }
+    var canExport: Bool { mode == .tiling || (!renderBusy && (mode == .effects ? !current.isEmpty : layers.contains { $0.enabled })) }
     var selectedLayer: ArtLayer? { layers.first { $0.id == selectedLayerID } }
     var layerCountLabel: String {
         let n = layers.count, last = n % 10
@@ -75,6 +76,7 @@ final class AppModel: ObservableObject {
     }
 
     func load(_ url: URL) {
+        if url.pathExtension.lowercased() == "formatile" { loadTile(url); return }
         if url.pathExtension.lowercased() == "forma" { loadProject(url); return }
         revision += 1
         let token = revision
@@ -91,6 +93,7 @@ final class AppModel: ObservableObject {
                     self.edit("Открыть изображение", record: self.raster != nil) {
                         self.raster = raster
                         self.showOriginal = false
+                        if self.mode == .tiling { self.mode = .effects }
                     }
                 case .failure(let error):
                     self.busy = false
@@ -255,6 +258,7 @@ final class AppModel: ObservableObject {
     }
 
     func saveProject() {
+        if mode == .tiling { saveTile(); return }
         guard let raster else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "forma") ?? UTType(exportedAs: "local.forma.project", conformingTo: .json)]
@@ -275,10 +279,11 @@ final class AppModel: ObservableObject {
 
     func openProject() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "forma") ?? .json]
+        panel.allowedContentTypes = [UTType(filenameExtension: "forma") ?? .json,
+                                     UTType(filenameExtension: "formatile") ?? .json]
         panel.allowsMultipleSelection = false
         panel.begin { [weak self] result in
-            if result == .OK, let url = panel.url { self?.loadProject(url) }
+            if result == .OK, let url = panel.url { self?.load(url) }
         }
     }
 
@@ -302,6 +307,7 @@ final class AppModel: ObservableObject {
     }
 
     func export(svg: Bool) {
+        if mode == .tiling { exportTile(pattern: true, svg: svg); return }
         guard canExport else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [svg ? .svg : .png]

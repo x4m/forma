@@ -39,13 +39,14 @@ struct EditorState: Equatable {
     var mode: WorkspaceMode
     var showOriginal: Bool
     var projectName: String
+    var tile: TileDesign
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.raster?.image === rhs.raster?.image && lhs.parameters == rhs.parameters &&
         lhs.style == rhs.style && lhs.ink == rhs.ink && lhs.paper == rhs.paper &&
         lhs.paperColor == rhs.paperColor && lhs.layers == rhs.layers &&
         lhs.selectedLayerID == rhs.selectedLayerID && lhs.mode == rhs.mode &&
-        lhs.showOriginal == rhs.showOriginal && lhs.projectName == rhs.projectName
+        lhs.showOriginal == rhs.showOriginal && lhs.projectName == rhs.projectName && lhs.tile == rhs.tile
     }
 }
 
@@ -55,7 +56,7 @@ extension AppModel {
         EditorState(raster: raster, parameters: parameters, style: selected, ink: color,
                     paper: paper, paperColor: paperColor, layers: layers,
                     selectedLayerID: selectedLayerID, mode: mode, showOriginal: showOriginal,
-                    projectName: projectName)
+                    projectName: projectName, tile: tile)
     }
 
     func useUndoManager(_ manager: UndoManager?) {
@@ -112,6 +113,7 @@ extension AppModel {
         color = state.ink; paper = state.paper; paperColor = state.paperColor
         layers = state.layers; selectedLayerID = state.selectedLayerID
         mode = state.mode; showOriginal = state.showOriginal; projectName = state.projectName
+        tile = state.tile
         refresh(after: before)
     }
 }

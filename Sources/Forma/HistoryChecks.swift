@@ -170,7 +170,16 @@ extension Diagnostics {
             window.makeFirstResponder(nil)
             try shortcut(redo: false)
             try require(model.parameters.alphabet == alphabet, "Undo after leaving the text field restored the wrong edit")
-            print("PASS: real SwiftUI window, native undo/redo menu and shortcuts, alphabet typing undo/redo and focus change")
+            model.mode = .tiling
+            let beforeTile = model.tile
+            model.tilePreset(1)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+            try shortcut(redo: false)
+            try require(model.tile == beforeTile, "Native undo did not restore the tile design")
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+            try shortcut(redo: true)
+            try require(!model.tile.profiles[0].isEmpty, "Native redo did not restore the tile preset")
+            print("PASS: real SwiftUI window, native undo/redo menu and shortcuts, alphabet typing/focus, tiling undo/redo")
             exit(0)
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
     }
