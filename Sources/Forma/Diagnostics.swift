@@ -3,6 +3,7 @@ import SwiftUI
 
 // Headless checks exercise real pixels and export files, not SwiftUI layout.
 enum Diagnostics {
+    @MainActor static var undoWindowCheckStarted = false
     struct Failure: Error, CustomStringConvertible { var description: String }
 
     static func argument(_ name: String) -> String? {
@@ -115,6 +116,7 @@ enum Diagnostics {
         try require(direction.colorAt(x: 50, y: 350)!.redComponent > 0.9, "PNG bottom must remain white")
         try halftoneChecks(destination: destination)
         try compositionChecks(destination: destination)
+        try historyChecks()
         print("PASS: segmentation, alpha holes, contour topology, \(Style.allCases.count) styles, SVG XML, PNG size/transparency, orientation, deterministic output")
 
         if let destination, let sampleURL = argument("--render-input").map({ URL(fileURLWithPath: $0) }) ?? Bundle.main.url(forResource: "sample", withExtension: "png") {

@@ -5,6 +5,12 @@ struct FormaApp: App {
     @StateObject private var model = AppModel()
 
     init() {
+        if CommandLine.arguments.contains("--check-undo-ui") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+                fputs("FAIL: Undo UI check timed out; windows=\(NSApp.windows.count)\n", stderr)
+                exit(1)
+            }
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot-ui"), CommandLine.arguments.count > index + 1 {
             do { try Diagnostics.snapshot(to: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
             catch { fputs("FAIL: \(error)\n", stderr); exit(1) }

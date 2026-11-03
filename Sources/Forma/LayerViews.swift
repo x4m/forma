@@ -28,7 +28,7 @@ struct LayerListView: View {
                     ForEach(Array(model.layers.reversed())) { layer in
                         HStack(spacing: 9) {
                             Button {
-                                if let index = model.layers.firstIndex(where: { $0.id == layer.id }) { model.layers[index].enabled.toggle() }
+                                model.toggleLayer(layer.id)
                             } label: { Image(systemName: layer.enabled ? "eye" : "eye.slash").foregroundStyle(.secondary) }
                                 .buttonStyle(.plain).help(layer.enabled ? "Скрыть слой" : "Показать слой")
                             Circle().fill(layer.ink.color).frame(width: 10, height: 10).overlay(Circle().strokeBorder(.gray.opacity(0.4)))
@@ -54,7 +54,8 @@ struct LayerListView: View {
                 Button { model.removeLayer() } label: { Image(systemName: "trash") }.help("Удалить выбранный слой")
             }.disabled(model.selectedLayer == nil).padding(.horizontal, 18)
             Divider()
-            PaperSettings(paper: $model.paper, color: $model.paperColor).padding(.horizontal, 18)
+            PaperSettings(paper: model.value(\.paper, name: "Изменить прозрачность фона"),
+                          color: model.value(\.paperColor, name: "Изменить цвет бумаги")).padding(.horizontal, 18)
             Button { model.saveProject() } label: { Label("Сохранить проект…", systemImage: "square.and.arrow.down") }
                 .padding(.horizontal, 18).padding(.bottom, 18)
         }
@@ -86,8 +87,7 @@ struct LayerInspectorView: View {
                     EffectSettings(style: layer.style,
                                    parameters: model.layerValue(\.parameters, fallback: Parameters()),
                                    ink: Binding(get: { layer.ink.color }, set: { color in
-                        guard let index = model.layers.firstIndex(where: { $0.id == layer.id }) else { return }
-                        model.layers[index].ink = Ink(NSColor(color))
+                        model.setLayerInk(color)
                     }))
                 }.padding(18)
             } else {
@@ -98,6 +98,8 @@ struct LayerInspectorView: View {
 }
 
 struct EffectSlider: View {
+    @EnvironmentObject var model: AppModel
+    @State private var editing = false
     var title: String
     @Binding var value: Double
     var range: ClosedRange<Double>
@@ -109,8 +111,13 @@ struct EffectSlider: View {
                 Spacer()
                 Text(String(format: format, value)).monospacedDigit().foregroundStyle(.secondary)
             }.font(.system(size: 11))
-            Slider(value: $value, in: range).controlSize(.small).accessibilityLabel(title)
+            Slider(value: $value, in: range, onEditingChanged: { active in
+                editing = active
+                if active { model.beginContinuousEdit(title) }
+                else { model.endContinuousEdit() }
+            }).controlSize(.small).accessibilityLabel(title)
         }
+        .onDisappear { if editing { model.endContinuousEdit() } }
     }
 }
 

@@ -33,6 +33,9 @@ final class AppModel: ObservableObject {
     private var layerCache: [UUID: (LayerRecipe, Drawing)] = [:]
     private var pendingRender: DispatchWorkItem?
     private let worker = DispatchQueue(label: "forma.render", qos: .userInitiated)
+    var historyManager: UndoManager?
+    var editDepth = 0
+    var continuousEdit: (state: EditorState, name: String)?
 
     var current: Drawing { drawings[selected] ?? Drawing() }
     var renderBusy: Bool { busy || (mode == .composition && layersBusy) }
@@ -85,11 +88,10 @@ final class AppModel: ObservableObject {
                 guard let self, self.revision == token else { return }
                 switch result {
                 case .success(let raster):
-                    self.raster = raster
-                    self.showOriginal = false
-                    self.layerCache = [:]
-                    self.regenerateComposition()
-                    self.regenerate()
+                    self.edit("Открыть изображение", record: self.raster != nil) {
+                        self.raster = raster
+                        self.showOriginal = false
+                    }
                 case .failure(let error):
                     self.busy = false
                     self.error = error.localizedDescription
@@ -122,71 +124,106 @@ final class AppModel: ObservableObject {
         worker.asyncAfter(deadline: .now() + 0.14, execute: task)
     }
 
-    func reset() { parameters = Parameters() }
+    func refresh(after before: EditorState) {
+        let sourceChanged = before.raster?.image !== raster?.image
+        if sourceChanged {
+            revision += 1; pendingRender?.cancel()
+            layerCache = [:]; drawings = [:]
+            busy = false
+        }
+        if sourceChanged || before.parameters != parameters { regenerate() }
+        if sourceChanged || before.layers != layers || before.paper != paper || before.paperColor != paperColor {
+            regenerateComposition()
+        }
+    }
+
+    func reset() { edit("Сбросить настройки") { parameters = Parameters() } }
 
     func selectEffect(_ style: Style) {
-        if style == .xray || style == .photogram || selected == .xray || selected == .photogram {
-            color = Color(nsColor: style.previewInk)
-            paperColor = Color(nsColor: style.previewPaper)
-            paper = true
+        edit("Выбрать эффект") {
+            if style == .xray || style == .photogram || selected == .xray || selected == .photogram {
+                color = Color(nsColor: style.previewInk)
+                paperColor = Color(nsColor: style.previewPaper)
+                paper = true
+            }
+            selected = style; showOriginal = false
         }
-        selected = style; showOriginal = false
     }
 
     func addLayer(_ style: Style? = nil) {
         guard layers.count < 64 else { error = "В композиции уже 64 слоя"; return }
-        let effect = style ?? selected
-        let ink = style == nil ? NSColor(color) : effect.previewInk
-        let layer = ArtLayer(style: effect, parameters: parameters, ink: Ink(ink))
-        layers.append(layer); selectedLayerID = layer.id
-        mode = .composition; showOriginal = false
+        edit("Добавить слой") {
+            let effect = style ?? selected
+            let ink = style == nil ? NSColor(color) : effect.previewInk
+            let layer = ArtLayer(style: effect, parameters: parameters, ink: Ink(ink))
+            layers.append(layer); selectedLayerID = layer.id
+            mode = .composition; showOriginal = false
+        }
     }
 
     func shadowPreset() {
         guard layers.count <= 62 else { error = "Недостаточно места для двух новых слоёв"; return }
-        let template = mode == .composition ? selectedLayer : nil
-        let topStyle = template?.style ?? selected
-        let topParameters = template?.parameters ?? parameters
-        let topInk = template?.ink ?? Ink(NSColor(color))
-        var shadowParameters = topParameters
-        shadowParameters.softness = 0
-        shadowParameters.invertTones = false
-        var bottom = ArtLayer(style: .shadow, parameters: shadowParameters, ink: Ink(.black))
-        bottom.opacity = 0.35; bottom.blur = 6; bottom.x = 9; bottom.y = 12
-        let top = ArtLayer(style: topStyle, parameters: topParameters, ink: topInk)
-        layers += [bottom, top]; selectedLayerID = top.id
-        mode = .composition; showOriginal = false
+        edit("Добавить тень и эффект") {
+            let template = mode == .composition ? selectedLayer : nil
+            let topStyle = template?.style ?? selected
+            let topParameters = template?.parameters ?? parameters
+            let topInk = template?.ink ?? Ink(NSColor(color))
+            var shadowParameters = topParameters
+            shadowParameters.softness = 0
+            shadowParameters.invertTones = false
+            var bottom = ArtLayer(style: .shadow, parameters: shadowParameters, ink: Ink(.black))
+            bottom.opacity = 0.35; bottom.blur = 6; bottom.x = 9; bottom.y = 12
+            let top = ArtLayer(style: topStyle, parameters: topParameters, ink: topInk)
+            layers += [bottom, top]; selectedLayerID = top.id
+            mode = .composition; showOriginal = false
+        }
     }
 
     func duplicateLayer() {
         guard var layer = selectedLayer, layers.count < 64 else { return }
-        layer.id = UUID(); layers.append(layer); selectedLayerID = layer.id
+        edit("Дублировать слой") {
+            layer.id = UUID(); layers.append(layer); selectedLayerID = layer.id
+        }
     }
 
     func removeLayer() {
         guard let id = selectedLayerID, let index = layers.firstIndex(where: { $0.id == id }) else { return }
-        layers.remove(at: index)
-        selectedLayerID = layers.isEmpty ? nil : layers[min(index, layers.count - 1)].id
+        edit("Удалить слой") {
+            layers.remove(at: index)
+            selectedLayerID = layers.isEmpty ? nil : layers[min(index, layers.count - 1)].id
+        }
     }
 
     func moveLayer(up: Bool) {
         guard let index = layers.firstIndex(where: { $0.id == selectedLayerID }) else { return }
         let target = index + (up ? 1 : -1)
         guard layers.indices.contains(target) else { return }
-        layers.swapAt(index, target)
+        edit("Переместить слой") { layers.swapAt(index, target) }
     }
 
-    func layerValue<T>(_ path: WritableKeyPath<ArtLayer, T>, fallback: T) -> Binding<T> {
+    func layerValue<T>(_ path: WritableKeyPath<ArtLayer, T>, fallback: T, name: String = "Изменить слой") -> Binding<T> {
         Binding(get: { self.selectedLayer?[keyPath: path] ?? fallback }, set: { value in
             guard let index = self.layers.firstIndex(where: { $0.id == self.selectedLayerID }) else { return }
-            self.layers[index][keyPath: path] = value
+            self.edit(name) { self.layers[index][keyPath: path] = value }
         })
+    }
+
+    func toggleLayer(_ id: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        edit(layers[index].enabled ? "Скрыть слой" : "Показать слой") { layers[index].enabled.toggle() }
+    }
+
+    func setLayerInk(_ color: Color) {
+        guard let index = layers.firstIndex(where: { $0.id == selectedLayerID }) else { return }
+        edit("Изменить цвет слоя") { layers[index].ink = Ink(NSColor(color)) }
     }
 
     func setLayerStyle(_ style: Style) {
         guard let index = layers.firstIndex(where: { $0.id == selectedLayerID }) else { return }
-        layers[index].style = style
-        layers[index].ink = Ink(style.previewInk)
+        edit("Изменить эффект слоя") {
+            layers[index].style = style
+            layers[index].ink = Ink(style.previewInk)
+        }
     }
 
     func regenerateComposition() {
@@ -254,13 +291,13 @@ final class AppModel: ObservableObject {
             let project = try JSONDecoder().decode(FormaProject.self, from: data)
             try project.validate()
             let restored = try project.source.restore()
-            revision += 1; pendingRender?.cancel()
-            raster = restored; parameters = project.parameters; selected = project.style
-            color = project.ink.color; paperColor = project.paper.color; paper = project.opaque
-            layers = project.layers; selectedLayerID = layers.last?.id; layerCache = [:]
-            projectName = url.deletingPathExtension().lastPathComponent
-            mode = .composition; showOriginal = false
-            regenerate(); regenerateComposition()
+            edit("Открыть проект") {
+                raster = restored; parameters = project.parameters; selected = project.style
+                color = project.ink.color; paperColor = project.paper.color; paper = project.opaque
+                layers = project.layers; selectedLayerID = layers.last?.id
+                projectName = url.deletingPathExtension().lastPathComponent
+                mode = .composition; showOriginal = false
+            }
         } catch { self.error = "Не удалось открыть проект: \(error.localizedDescription)" }
     }
 

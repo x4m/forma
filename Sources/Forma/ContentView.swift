@@ -38,10 +38,7 @@ struct ContentView: View {
         .background(panelColor)
         .tint(accent)
         .frame(minWidth: 1020, minHeight: 720)
-        .onChange(of: model.parameters) { _, _ in model.regenerate() }
-        .onChange(of: model.layers) { _, _ in model.regenerateComposition() }
-        .onChange(of: model.paper) { _, _ in model.regenerateComposition() }
-        .onChange(of: model.paperColor) { _, _ in model.regenerateComposition() }
+        .background(UndoWindowBridge(model: model))
         .onChange(of: model.mode) { _, value in if value == .composition { model.regenerateComposition() } }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dropTarget) { providers in
             guard let provider = providers.first else { return false }
@@ -120,9 +117,12 @@ struct ContentView: View {
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineSpacing(3)
                 }
                 Divider()
-                EffectSettings(style: model.selected, parameters: $model.parameters, ink: $model.color)
+                EffectSettings(style: model.selected,
+                               parameters: model.value(\.parameters, name: "Изменить настройки эффекта"),
+                               ink: model.value(\.color, name: "Изменить цвет чернил"))
                 Divider()
-                PaperSettings(paper: $model.paper, color: $model.paperColor)
+                PaperSettings(paper: model.value(\.paper, name: "Изменить прозрачность фона"),
+                              color: model.value(\.paperColor, name: "Изменить цвет бумаги"))
                 Button("Сбросить настройки") { model.reset() }.buttonStyle(.link).font(.system(size: 11))
             }.padding(20)
         }
