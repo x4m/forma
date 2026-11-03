@@ -40,9 +40,16 @@ enum Diagnostics {
             while model.layersBusy && Date() < deadline { RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02)) }
         }
         if CommandLine.arguments.contains("--snapshot-tiling") { model.mode = .tiling; model.tilePreset(1) }
-        let view = ContentView().environmentObject(model).frame(width: 1180, height: 860).environment(\.colorScheme, .light)
+        if let name = argument("--tile-sample"), let sample = TileSample(rawValue:name) {
+            model.mode = .tiling; model.tile = sample.design
+        }
+        let gallery = CommandLine.arguments.contains("--snapshot-tile-samples")
+        let width: CGFloat = gallery ? 700 : 1180, height: CGFloat = gallery ? 650 : 860
+        let content = gallery
+            ? AnyView(TileSampleGallery { _ in }) : AnyView(ContentView())
+        let view = content.environmentObject(model).frame(width: width, height: height).environment(\.colorScheme, .light)
         let host = NSHostingView(rootView: view)
-        host.frame = NSRect(x: 0, y: 0, width: 1180, height: 860)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.layoutSubtreeIfNeeded()

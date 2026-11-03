@@ -30,7 +30,7 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 8) {
                 Circle().fill(model.renderBusy ? Color.orange : accent).frame(width: 5, height: 5)
-                Text(model.mode == .tiling ? "\(model.tile.polygon.count) вершин контура · одинаковые плитки без щелей" : (model.renderBusy ? "Пересчитываю изображение…" : (model.mode == .composition ? "\(model.layerCountLabel) · \(model.projectName)" : model.status)))
+                Text(footerStatus)
                 Spacer()
                 Text("SWIFTUI / MACOS").tracking(1.6).font(.system(size: 9, design: .monospaced))
             }
@@ -95,6 +95,14 @@ struct ContentView: View {
                 .disabled(!model.canExport)
         }
         .padding(.horizontal, 22).frame(height: 72)
+    }
+
+    private var footerStatus: String {
+        if model.mode == .tiling {
+            return model.tile.division == nil ? "\(model.tile.polygon.count) вершин контура · одинаковые плитки без щелей" : "Две фигуры в повторяющемся блоке · общая граница"
+        }
+        if model.renderBusy { return "Пересчитываю изображение…" }
+        return model.mode == .composition ? "\(model.layerCountLabel) · \(model.projectName)" : model.status
     }
 
     private var controls: some View {

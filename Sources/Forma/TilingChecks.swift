@@ -93,6 +93,66 @@ extension Diagnostics {
                     "Separated triangles must not intersect")
         let far = CGRect(x: 1_000_000, y: -2_000_000, width: 4000, height: 3000)
         try require(!TileDesign().cells(in: far).isEmpty, "Panning far from the origin must not reach a finite edge")
+        for sample in TileSample.allCases {
+            let design = sample.design
+            try require(design.valid, "Invalid library sample: \(sample.rawValue)")
+            try require(abs(design.regions.reduce(0) { $0 + tileArea($1) } - design.determinant) < 1e-5,
+                        "Subdivision lost part of the repeating cell")
+            let paths = design.regions.map(tilePath), bounds = design.bounds
+            for k in 0..<500 {
+                let p = CGPoint(x: bounds.minX + (Double(k)*0.61803398875+0.13).truncatingRemainder(dividingBy:1)*bounds.width,
+                                y: bounds.minY + (Double(k)*0.41421356237+0.37).truncatingRemainder(dividingBy:1)*bounds.height)
+                let count = paths.filter { $0.contains(p) }.count
+                try require(count == (design.path.contains(p) ? 1 : 0), "Subdivision has a hole or overlap")
+            }
+            let data = try JSONEncoder().encode(TileDocument(tile:design))
+            let decoded = try JSONDecoder().decode(TileDocument.self,from:data)
+            try decoded.validate()
+            try require(decoded.tile == design, "Sample project round trip changed its geometry or details")
+            let svg = design.svg(pattern:true)
+            try require(XMLParser(data:Data(svg.utf8)).parse(), "Sample SVG is invalid")
+            if let destination {
+                try design.png()!.write(to:destination.appendingPathComponent("sample-\(sample.rawValue).png"))
+                try Data(svg.utf8).write(to:destination.appendingPathComponent("sample-\(sample.rawValue).svg"))
+                try data.write(to:destination.appendingPathComponent("sample-\(sample.rawValue).formatile"))
+            }
+            model.selectTileSample(sample)
+            try require(model.tile == design, "Sample selection did not load its design")
+        }
+        let beforeSplit = model.editorState
+        model.selectTileSample(.fishBird)
+        let split = model.editorState
+        model.setTileDivision(true)
+        try require(model.editorState == split, "Setting the same subdivision mode must preserve the shared border")
+        manager.undo()
+        try require(model.editorState == beforeSplit, "Sample selection must undo atomically")
+        manager.redo()
+        try require(model.editorState == split, "Sample redo lost the common border")
+        let cutPoint = model.tile.division![5]
+        model.beginContinuousEdit("Общая граница")
+        try require(model.moveTileHandle(.division(5),to:tileAdd(cutPoint,CGPoint(x:3,y:0))), "A valid internal edit was rejected")
+        model.endContinuousEdit()
+        manager.undo()
+        try require(model.editorState == split, "Undo internal boundary edit failed")
+        try require(model.tile.moving(.division(5),to:CGPoint(x:500,y:500)) == nil, "A division must not leave the tile")
+        let middle = tileScale(tileAdd(model.tile.divisionLine[5], model.tile.divisionLine[6]),0.5)
+        let count = model.tile.division!.count
+        model.insertTileKnot(at:middle,tolerance:3)
+        try require(model.tile.division!.count == count+1, "Adding a common-border point failed")
+        manager.undo()
+        try require(model.editorState == split, "Undo insertion into shared border failed")
+        let legacy = try JSONDecoder().decode(TileDocument.self,from:Data("{\"version\":1,\"tile\":{\"kind\":4,\"vertices\":[[-100,-100],[100,-100],[100,100],[-100,100]],\"profiles\":[[],[]],\"palette\":0,\"seam\":1.4}}".utf8))
+        try legacy.validate()
+        try require(legacy.tile.division == nil && legacy.tile.details == nil, "Legacy project compatibility failed")
+        let reference = TileSample.fishBird.design
+        let neck = reference.edge(4)
+        let onNeck = tileScale(tileAdd(neck[5],neck[6]),0.5)
+        let inserted = reference.inserting(at:onNeck,tolerance:1)
+        try require(inserted?.valid == true && inserted!.profiles[1].count == reference.profiles[1].count+1,
+                    "Insertion must preserve path order on a folded, opposite edge")
+        try require(reference.profiles.contains { line in zip(line,line.dropFirst()).contains { $0.t > $1.t } },
+                    "The reference must exercise a border that bends backwards")
+        print("PASS: \(TileSample.allCases.count) editable samples, folded borders, shared internal boundary, complementary regions, details, project compatibility and undo")
         print("PASS: 4/6-sided tilings, exact edge pairing, no gaps/overlaps, tabs, vertex constraints, undo/redo, project and SVG/PNG")
     }
 }

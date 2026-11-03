@@ -179,6 +179,22 @@ extension Diagnostics {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
             try shortcut(redo: true)
             try require(!model.tile.profiles[0].isEmpty, "Native redo did not restore the tile preset")
+            model.selectTileSample(.fishBird)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow:0.1))
+            // This probe runs in one callback. A nested RunLoop does not always
+            // finish AppKit's outer event group as returning to the event loop
+            // between a real menu click and a mouse drag would do.
+            while manager.groupingLevel > 0 { manager.endUndoGrouping() }
+            let pair = model.tile
+            model.beginContinuousEdit("Общая граница")
+            try require(model.moveTileHandle(.division(5),to:tileAdd(pair.division![5],CGPoint(x:3,y:0))), "Shared border edit failed in window")
+            model.endContinuousEdit()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow:0.05))
+            while manager.groupingLevel > 0 { manager.endUndoGrouping() }
+            try shortcut(redo:false)
+            try require(model.tile == pair, "Native undo lost part of the two-figure block")
+            try shortcut(redo:true)
+            try require(model.tile.division != pair.division, "Native redo did not restore shared border")
             print("PASS: real SwiftUI window, native undo/redo menu and shortcuts, alphabet typing/focus, tiling undo/redo")
             exit(0)
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }

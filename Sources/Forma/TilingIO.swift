@@ -2,10 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct TileDocument: Codable {
-    var version = 1
+    var version = 2
     var tile: TileDesign
     func validate() throws {
-        guard version == 1, tile.valid else { throw Diagnostics.Failure(description: "Некорректный проект мощения") }
+        guard (1...2).contains(version), tile.valid else { throw CocoaError(.fileReadCorruptFile) }
     }
 }
 
@@ -14,20 +14,35 @@ extension TileDesign {
 
     func svg(pattern: Bool) -> String {
         let rect = pattern ? Self.exportRect : bounds.insetBy(dx: -8, dy: -8)
-        let points = polygon
-        let d = "M" + points.map { "\($0.x),\($0.y)" }.joined(separator: " L") + " Z"
         let entries = pattern ? cells(in: rect) : [(0, 0)]
         let paths = entries.map { i, j -> String in
             let o = origin(i, j)
-            return "<path d=\"\(d)\" transform=\"translate(\(o.x) \(o.y))\" fill=\"\(fill(i,j).hex)\"/>"
+            let fills = regions.enumerated().map { index, points in
+                "<path d=\"\(tileSVGPath(points))\" fill=\"\(regionFill(index,i:i,j:j).hex)\"/>"
+            }.joined()
+            let border = "<path d=\"\(tileSVGPath(polygon))\"/>" + (division == nil ? "" : "<path d=\"\(tileSVGPath(divisionLine,closed:false))\"/>")
+            var drawing = ""
+            if showDetails != false {
+                for (index,detail) in (details ?? []).enumerated() {
+                    let clip = detail.region.flatMap { regions.indices.contains($0) ? regions[$0] : nil } ?? polygon
+                    let id = "clip-\(i)-\(j)-\(index)"
+                    let content: String
+                    if let r = detail.radius, let p = detail.points.first {
+                        content = "<circle cx=\"\(p.x)\" cy=\"\(p.y)\" r=\"\(r)\" fill=\"white\"/><circle cx=\"\(p.x)\" cy=\"\(p.y)\" r=\"\(r*0.55)\" fill=\"black\"/>"
+                    } else {
+                        content = "<path d=\"\(tileSVGPath(detail.points,closed:false))\" fill=\"none\" stroke=\"#595959\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+                    }
+                    drawing += "<defs><clipPath id=\"\(id)\"><path d=\"\(tileSVGPath(clip))\"/></clipPath></defs><g clip-path=\"url(#\(id))\">\(content)</g>"
+                }
+            }
+            return "<g transform=\"translate(\(o.x) \(o.y))\">\(fills)<g fill=\"none\" stroke=\"#343846\" stroke-width=\"\(seam)\" stroke-linejoin=\"round\">\(border)</g>\(drawing)</g>"
         }.joined(separator: "\n")
         let background = pattern ? "<rect x=\"\(rect.minX)\" y=\"\(rect.minY)\" width=\"\(rect.width)\" height=\"\(rect.height)\" fill=\"\(fill(0,0).hex)\"/>" : ""
         return """
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="\(rect.minX) \(rect.minY) \(rect.width) \(rect.height)">
         \(background)
-        <g stroke="#343846" stroke-width="\(seam)" stroke-linejoin="round">
         \(paths)
-        </g></svg>
+        </svg>
         """
     }
 
@@ -42,8 +57,7 @@ extension TileDesign {
         for (i,j) in cells(in: rect) {
             let o = origin(i,j)
             context.saveGState(); context.translateBy(x: o.x, y: o.y)
-            context.setFillColor(fill(i,j).cgColor); context.setStrokeColor(NSColor.darkGray.cgColor)
-            context.addPath(path); context.drawPath(using: seam > 0 ? .fillStroke : .fill)
+            paint(in: context, i:i, j:j)
             context.restoreGState()
         }
         guard let image = context.makeImage() else { return nil }

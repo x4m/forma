@@ -8,7 +8,7 @@ enum TileKind: Int, CaseIterable, Codable, Identifiable {
 
 struct TileKnot: Codable, Equatable { var t: Double; var offset: Double }
 struct TileHandle: Identifiable {
-    enum Kind { case vertex(Int), knot(Int, Int) }
+    enum Kind { case vertex(Int), knot(Int, Int), division(Int) }
     var id: String
     var point: CGPoint
     var kind: Kind
@@ -22,6 +22,10 @@ struct TileDesign: Codable, Equatable {
     var profiles: [[TileKnot]]
     var palette = 0
     var seam: Double = 1.4
+    // Optional fields keep projects made before subdivisions readable.
+    var division: [CGPoint]?
+    var details: [TileDetail]?
+    var showDetails: Bool?
 
     init(_ kind: TileKind = .hexagon) {
         self.kind = kind
@@ -54,6 +58,13 @@ struct TileDesign: Codable, Equatable {
     var polygon: [CGPoint] { (0..<kind.rawValue).flatMap { Array(edge($0).dropLast()) } }
     var path: CGPath { tilePath(polygon) }
     var bounds: CGRect { path.boundingBoxOfPath }
+    var divisionLine: [CGPoint] { [vertices[0]] + (division ?? []) + [vertices[half]] }
+    var regions: [[CGPoint]] {
+        guard let division else { return [polygon] }
+        let first = (0..<half).flatMap { Array(edge($0).dropLast()) } + [vertices[half]]
+        let second = (half..<kind.rawValue).flatMap { Array(edge($0).dropLast()) } + [vertices[0]]
+        return [first + division.reversed(), second + division]
+    }
     var handles: [TileHandle] {
         var result = vertices.indices.map { TileHandle(id: "v\($0)", point: vertices[$0], kind: .vertex($0)) }
         for e in 0..<kind.rawValue {
@@ -63,6 +74,9 @@ struct TileDesign: Codable, Equatable {
                 result.append(TileHandle(id: "e\(e)-\(j)", point: line[index], kind: .knot(e, j)))
             }
         }
+        for (i, point) in (division ?? []).enumerated() {
+            result.append(TileHandle(id: "division\(i)", point: point, kind: .division(i)))
+        }
         return result
     }
 
@@ -70,6 +84,7 @@ struct TileDesign: Codable, Equatable {
         guard point.x.isFinite && point.y.isFinite else { return nil }
         var next = self
         switch handle {
+        case .division(let index): next.division?[index] = point
         case .vertex(let index):
             let i = index % half, p = index < half ? point : tileScale(point, -1)
             next.vertices[i] = p; next.vertices[i + half] = tileScale(p, -1)
@@ -84,14 +99,21 @@ struct TileDesign: Codable, Equatable {
     }
 
     func inserting(at point: CGPoint, tolerance: Double) -> Self? {
-        var nearest: (edge: Int, point: CGPoint, distance: Double)?
-        for e in 0..<kind.rawValue where profiles[e % half].count < 8 {
+        if let division, division.count < 32,
+           let hit = tileNearest(point, on: divisionLine), hit.distance < tolerance,
+           !divisionLine.contains(where: { hypot($0.x - hit.point.x, $0.y - hit.point.y) < 3 }) {
+            var next = self
+            next.division?.insert(hit.point, at: hit.segment)
+            return next.valid ? next : nil
+        }
+        var nearest: (edge: Int, segment: Int, point: CGPoint, distance: Double)?
+        for e in 0..<kind.rawValue where profiles[e % half].count < 32 {
             let line = edge(e)
             for i in 0..<(line.count - 1) {
                 let a = line[i], d = tileSubtract(line[i + 1], a)
                 let t = max(0, min(1, tileDot(tileSubtract(point, a), d) / tileDot(d, d)))
                 let p = tileAdd(a, tileScale(d, t)), distance = hypot(p.x - point.x, p.y - point.y)
-                if distance < (nearest?.distance ?? tolerance) { nearest = (e, p, Double(distance)) }
+                if distance < (nearest?.distance ?? tolerance) { nearest = (e, i, p, Double(distance)) }
             }
         }
         guard let hit = nearest else { return nil }
@@ -99,9 +121,10 @@ struct TileDesign: Codable, Equatable {
         let p = hit.edge < half ? hit.point : tileAdd(hit.point, tileAdd(a, b))
         let relative = tileSubtract(p, a), length = hypot(d.x, d.y)
         let knot = TileKnot(t: tileDot(relative, d) / (length * length), offset: tileCross(d, relative) / length)
-        guard (0.03...0.97).contains(knot.t), profiles[e].allSatisfy({ abs($0.t - knot.t) > 0.025 }) else { return nil }
+        guard !edge(hit.edge).contains(where: { tileClose($0,hit.point) || hypot($0.x-hit.point.x,$0.y-hit.point.y) < 2 }) else { return nil }
         var next = self
-        next.profiles[e].append(knot); next.profiles[e].sort { $0.t < $1.t }
+        let insertion = hit.edge < half ? hit.segment : profiles[e].count - hit.segment
+        next.profiles[e].insert(knot,at:insertion)
         return next.valid ? next : nil
     }
 
@@ -139,16 +162,14 @@ struct TileDesign: Codable, Equatable {
     }
 
     var valid: Bool {
-        guard vertices.count == kind.rawValue, profiles.count == half, (0...2).contains(palette),
+        guard vertices.count == kind.rawValue, profiles.count == half, (0...3).contains(palette),
               seam.isFinite, (0...8).contains(seam), vertices.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 260 && abs($0.y) <= 260 }) else { return false }
         for i in 0..<half {
             guard hypot(vertices[i].x + vertices[i + half].x, vertices[i].y + vertices[i + half].y) < 1e-6,
-                  profiles[i].count <= 8 else { return false }
-            var last = 0.0
+                  profiles[i].count <= 32 else { return false }
             for knot in profiles[i] {
-                guard knot.t.isFinite, knot.offset.isFinite, knot.t > last + 0.02,
-                      knot.t < 0.98, abs(knot.offset) <= 100 else { return false }
-                last = knot.t
+                guard knot.t.isFinite, knot.offset.isFinite, (-0.5...1.5).contains(knot.t),
+                      abs(knot.offset) <= 100 else { return false }
             }
         }
         for i in vertices.indices {
@@ -159,6 +180,7 @@ struct TileDesign: Codable, Equatable {
         guard determinant > 8000 else { return false }
         let p = polygon
         guard abs(tileArea(p) - determinant) < 1e-5 else { return false }
+        guard p.indices.allSatisfy({ hypot(p[$0].x-p[($0+1)%p.count].x,p[$0].y-p[($0+1)%p.count].y) > 1e-5 }) else { return false }
         // Reject self-crossing and touching non-adjacent edges before triangulation.
         for i in p.indices {
             for j in p.indices where j > i + 1 && !(i == 0 && j == p.count - 1) {
@@ -166,14 +188,39 @@ struct TileDesign: Codable, Equatable {
             }
         }
         guard let triangles = tileTriangles(p) else { return false }
+        if let details {
+            guard details.count <= 32, details.allSatisfy(\.valid) else { return false }
+        }
+        if let division {
+            guard division.count <= 32, division.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) < 600 && abs($0.y) < 600 }) else { return false }
+            let line = divisionLine
+            for i in 0..<(line.count - 1) {
+                let a = line[i], b = line[i + 1]
+                guard hypot(b.x - a.x, b.y - a.y) > 2,
+                      path.contains(tileScale(tileAdd(a,b), 0.5)) else { return false }
+                for j in 0..<(line.count - 1) where j > i + 1 {
+                    if tileSegmentsMeet(a,b,line[j],line[j+1]) { return false }
+                }
+                for j in p.indices {
+                    let c = p[j], d = p[(j + 1) % p.count]
+                    if tileSegmentsMeet(a,b,c,d) {
+                        let atStart = i == 0 && (tileClose(c,a) || tileClose(d,a))
+                        let atEnd = i == line.count - 2 && (tileClose(c,b) || tileClose(d,b))
+                        guard (atStart || atEnd), abs(tileCross(tileSubtract(b,a), tileSubtract(d,c))) > 1e-6 else { return false }
+                    }
+                }
+            }
+            guard regions.allSatisfy({ tileArea($0) > 400 && tileTriangles($0) != nil }) else { return false }
+        }
         // Matching edges alone do not prevent a very deep tab hitting a different
         // neighbour. Test positive intersection AREA, allowing shared seams.
         let neighbours = cells(in: bounds)
         guard !neighbours.isEmpty else { return false }
+        let triangleBoxes = triangles.map { tilePath($0).boundingBoxOfPath }
         for (i, j) in neighbours where i != 0 || j != 0 {
             let o = origin(i, j), other = triangles.map { $0.map { tileAdd($0, o) } }
-            for a in triangles {
-                for b in other where tilePath(a).boundingBoxOfPath.intersects(tilePath(b).boundingBoxOfPath) {
+            for (index,a) in triangles.enumerated() {
+                for (indexB,b) in other.enumerated() where triangleBoxes[index].intersects(triangleBoxes[indexB].offsetBy(dx:o.x,dy:o.y)) {
                     if abs(tileArea(tileClip(a, by: b))) > 1e-5 { return false }
                 }
             }
@@ -185,12 +232,14 @@ struct TileDesign: Codable, Equatable {
         let choices: [[NSColor]] = [
             [NSColor(srgbRed: 0.78, green: 0.82, blue: 0.92, alpha: 1), NSColor(srgbRed: 0.9, green: 0.91, blue: 0.96, alpha: 1), NSColor(srgbRed: 0.65, green: 0.71, blue: 0.86, alpha: 1)],
             [NSColor(srgbRed: 0.82, green: 0.56, blue: 0.4, alpha: 1), NSColor(srgbRed: 0.94, green: 0.79, blue: 0.61, alpha: 1), NSColor(srgbRed: 0.72, green: 0.4, blue: 0.29, alpha: 1)],
-            [.init(white: 0.96, alpha: 1), .init(white: 0.83, alpha: 1), .init(white: 0.65, alpha: 1)] ]
+            [.init(white: 0.96, alpha: 1), .init(white: 0.83, alpha: 1), .init(white: 0.65, alpha: 1)],
+            [NSColor(srgbRed: 0.63, green: 0.74, blue: 0.55, alpha: 1), NSColor(srgbRed: 0.84, green: 0.9, blue: 0.74, alpha: 1), NSColor(srgbRed: 0.45, green: 0.6, blue: 0.46, alpha: 1)] ]
         return choices[palette][((i - j) % 3 + 3) % 3]
     }
 }
 
 func tileAdd(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: a.x + b.x, y: a.y + b.y) }
+func tileClose(_ a: CGPoint, _ b: CGPoint) -> Bool { hypot(a.x-b.x,a.y-b.y) < 1e-5 }
 func tileSubtract(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: a.x - b.x, y: a.y - b.y) }
 func tileScale(_ a: CGPoint, _ n: Double) -> CGPoint { CGPoint(x: a.x * n, y: a.y * n) }
 func tileCross(_ a: CGPoint, _ b: CGPoint) -> Double { a.x * b.y - a.y * b.x }
